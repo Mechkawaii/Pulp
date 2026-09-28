@@ -22,6 +22,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=Work+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <style>
   html, body{margin:0; padding:0; overflow-x:clip;}
   html{
@@ -307,6 +310,7 @@
       <h2>Mon profil &amp; objectifs</h2>
       <button class="btn-ghost" data-action="close-profile-editor" aria-label="Fermer">✕</button>
     </div>
+    <div id="account-box"></div>
     <div class="muted" style="font-size:11.5px;margin-bottom:12px;">Calcule tes objectifs (métabolisme de base + activité + surplus de prise de masse). Modifiable à tout moment.</div>
     <div class="field-row">
       <div class="field"><label>Sexe</label>
@@ -530,18 +534,18 @@
     return state.logs.workouts.find(function(w){ return w.date === iso; });
   }
 
-  /* ---------- persistence (per-device, local to this browser) ---------- */
+  /* ---------- persistence (local + synchro cloud) ---------- */
 
   function currentStateJSON(){ return JSON.stringify(state); }
 
   function persist(){
+    state.updatedAt = Date.now();
     try{
       localStorage.setItem('pulp-state', currentStateJSON());
-      setSyncDot('');
     }catch(e){
-      setSyncDot('off');
       toast('Sauvegarde locale indisponible sur cet appareil.');
     }
+    if(fbDocRef) scheduleCloudPush(); else setSyncDot('off');
   }
 
   function localLoad(){
@@ -555,7 +559,148 @@
   function setSyncDot(mode){
     var el = document.getElementById('sync-dot');
     if(!el) return;
-    el.className = 'sync-dot' + (mode === 'off' ? ' off' : '');
+    el.className = 'sync-dot' + (mode === 'off' ? ' off' : mode === 'busy' ? ' busy' : '');
+  }
+
+  /* ---------- synchro cloud (Firebase) ----------
+     Rempli par Claude une fois le projet Firebase cree :
+     https://console.firebase.google.com -> Project settings -> Your apps -> Web app. */
+  var FIREBASE_CONFIG = {
+    apiKey: "",
+    authDomain: "",
+    projectId: "",
+    storageBucket: "",
+    messagingSenderId: "",
+    appId: ""
+  };
+  var ALLOWED_SYNC_EMAIL = 'valentin.heyne@gmail.com';
+
+  var fbAuth = null, fbDb = null, fbUser = null, fbDocRef = null, fbUnsub = null;
+  var syncPushTimer = null;
+  var applyingRemote = false;
+
+  function syncConfigured(){
+    return !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId && window.firebase);
+  }
+
+  function initSync(){
+    if(!syncConfigured()){ setSyncDot('off'); renderAccountBox(); return; }
+    try{
+      firebase.initializeApp(FIREBASE_CONFIG);
+      fbAuth = firebase.auth();
+      fbDb = firebase.firestore();
+    }catch(e){ setSyncDot('off'); return; }
+
+    fbAuth.onAuthStateChanged(function(user){
+      fbUser = user;
+      renderAccountBox();
+      if(user && user.email === ALLOWED_SYNC_EMAIL){
+        attachSync(user.uid);
+      } else {
+        detachSync();
+        setSyncDot('off');
+      }
+    });
+  }
+
+  function signInSync(){
+    var pwEl = document.getElementById('sync-password');
+    var pass = pwEl ? pwEl.value : '';
+    var errEl = document.getElementById('sync-error');
+    if(!pass){ if(errEl) errEl.textContent = 'Entre le mot de passe.'; return; }
+    if(errEl) errEl.textContent = 'Connexion…';
+    fbAuth.signInWithEmailAndPassword(ALLOWED_SYNC_EMAIL, pass).catch(function(err){
+      if(errEl) errEl.textContent = 'Échec : ' + (err && err.message ? err.message : 'vérifie le mot de passe.');
+    });
+  }
+
+  function signOutSync(){
+    if(fbAuth) fbAuth.signOut();
+  }
+
+  function attachSync(uid){
+    if(fbUnsub) fbUnsub();
+    fbDocRef = fbDb.collection('pulp').doc(uid);
+    setSyncDot('busy');
+    fbDocRef.get().then(function(snap){
+      var data = snap.exists ? snap.data() : null;
+      var remoteState = data && data.state;
+      var localUpdatedAt = state.updatedAt || 0;
+      var remoteUpdatedAt = (remoteState && remoteState.updatedAt) || 0;
+      if(remoteState && remoteUpdatedAt > localUpdatedAt){
+        applyingRemote = true;
+        state = remoteState;
+        try{ localStorage.setItem('pulp-state', currentStateJSON()); }catch(e){}
+        renderShell(); renderActiveTab();
+        applyingRemote = false;
+      } else {
+        pushToCloud();
+      }
+      listenRemote();
+      setSyncDot('');
+    }).catch(function(){ setSyncDot('off'); });
+  }
+
+  function detachSync(){
+    if(fbUnsub){ fbUnsub(); fbUnsub = null; }
+    fbDocRef = null;
+  }
+
+  function listenRemote(){
+    if(!fbDocRef) return;
+    fbUnsub = fbDocRef.onSnapshot(function(snap){
+      if(applyingRemote) return;
+      var data = snap.data();
+      var remoteState = data && data.state;
+      if(!remoteState) return;
+      if((remoteState.updatedAt||0) > (state.updatedAt||0)){
+        applyingRemote = true;
+        state = remoteState;
+        try{ localStorage.setItem('pulp-state', currentStateJSON()); }catch(e){}
+        renderShell(); renderActiveTab();
+        applyingRemote = false;
+        setSyncDot('');
+      }
+    }, function(){ setSyncDot('off'); });
+  }
+
+  function pushToCloud(){
+    if(!fbDocRef || applyingRemote) return;
+    setSyncDot('busy');
+    fbDocRef.set({ state: state }).then(function(){
+      setSyncDot('');
+    }).catch(function(){ setSyncDot('off'); });
+  }
+
+  function scheduleCloudPush(){
+    if(!fbDocRef) return;
+    setSyncDot('busy');
+    if(syncPushTimer) clearTimeout(syncPushTimer);
+    syncPushTimer = setTimeout(function(){ syncPushTimer = null; pushToCloud(); }, 800);
+  }
+
+  function renderAccountBox(){
+    var el = document.getElementById('account-box');
+    if(!el) return;
+    if(!syncConfigured()){
+      el.innerHTML = '<div class="muted" style="font-size:11.5px;margin-bottom:14px;">Synchro cloud pas encore configurée.</div>';
+      return;
+    }
+    if(fbUser && fbUser.email === ALLOWED_SYNC_EMAIL){
+      el.innerHTML = '<div class="list-item" style="padding:0 0 12px;border-bottom:1px solid var(--line);margin-bottom:14px;">' +
+        '<div class="li-main"><div class="li-title">'+fbUser.email+'</div><div class="li-sub">Synchronisé sur le cloud</div></div>' +
+        '<button class="btn-ghost btn-sm" data-action="sync-sign-out">Déconnexion</button></div>';
+    } else if(fbUser){
+      el.innerHTML = '<div class="empty" style="padding:10px 0;border-bottom:1px solid var(--line);margin-bottom:14px;">Ce compte n\'est pas autorisé pour Pulp.<br>' +
+        '<button class="btn btn-sm" style="margin-top:8px;" data-action="sync-sign-out">Se déconnecter</button></div>';
+    } else {
+      el.innerHTML = '<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--line);">' +
+        '<label>Mot de passe ('+ALLOWED_SYNC_EMAIL+')</label>' +
+        '<div class="field-row" style="align-items:end;">' +
+        '<div class="field" style="margin-bottom:0;"><input type="password" id="sync-password" placeholder="••••••••"></div>' +
+        '<button class="btn btn-primary" data-action="sync-sign-in">Connexion</button>' +
+        '</div><div class="muted" id="sync-error" style="font-size:11px;margin-top:6px;"></div></div>';
+    }
   }
 
   /* ---------- computed ---------- */
@@ -618,6 +763,7 @@
   }
 
   function openProfileEditor(){
+    renderAccountBox();
     var b = state.profile.bodyStats || {};
     document.getElementById('profile-sex').value = b.sex || 'h';
     document.getElementById('profile-age').value = b.age || '';
@@ -1643,6 +1789,8 @@
     else if(action === 'open-profile-editor'){ openProfileEditor(); }
     else if(action === 'close-profile-editor'){ closeProfileEditor(); }
     else if(action === 'save-profile-targets'){ saveProfileTargets(); }
+    else if(action === 'sync-sign-in'){ signInSync(); }
+    else if(action === 'sync-sign-out'){ signOutSync(); }
   });
 
   document.addEventListener('input', function(e){
@@ -1672,6 +1820,10 @@
       e.preventDefault();
       runFoodSearch();
     }
+    else if(e.key === 'Enter' && e.target && e.target.id === 'sync-password'){
+      e.preventDefault();
+      signInSync();
+    }
   });
 
   document.addEventListener('change', function(e){
@@ -1697,9 +1849,10 @@
     var saved = localLoad();
     if(saved) state = saved;
     loadTheme();
-    setSyncDot('');
+    setSyncDot('off');
     renderShell();
     renderActiveTab();
+    initSync();
   }
 
   boot();
