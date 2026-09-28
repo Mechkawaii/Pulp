@@ -317,6 +317,85 @@
   var state = JSON.parse(document.getElementById('pulp-state').textContent);
   var activeTab = (location.hash || '#today').replace('#','');
   if(!['today','workouts','nutrition','weight'].includes(activeTab)) activeTab = 'today';
+  // Base locale d'aliments courants (valeurs moyennes pour 100 g / 100 ml, cru sauf mention "cuit").
+  // Sert de référence rapide et fiable hors-ligne pour les aliments simples, en complément
+  // d'Open Food Facts (plus fort sur les produits emballés/de marque).
+  var LOCAL_FOOD_DB = [
+    {name:"Œuf entier", alias:"oeuf", kcal:155, protein:13, carbs:1.1, fat:11},
+    {name:"Blanc d'œuf", alias:"blanc oeuf", kcal:52, protein:11, carbs:0.7, fat:0.2},
+    {name:"Poulet, blanc (cuit)", alias:"poulet blanc filet escalope", kcal:165, protein:31, carbs:0, fat:3.6},
+    {name:"Poulet, cuisse (cuit)", alias:"poulet cuisse", kcal:209, protein:26, carbs:0, fat:10.9},
+    {name:"Dinde, blanc (cuit)", alias:"dinde", kcal:135, protein:29, carbs:0, fat:1},
+    {name:"Bœuf haché 5% (cuit)", alias:"boeuf hache steak", kcal:172, protein:26, carbs:0, fat:7},
+    {name:"Bœuf haché 15% (cuit)", alias:"boeuf hache steak", kcal:254, protein:24, carbs:0, fat:17},
+    {name:"Steak / bavette (cuit)", alias:"boeuf viande rouge", kcal:220, protein:29, carbs:0, fat:11},
+    {name:"Porc, filet (cuit)", alias:"porc", kcal:143, protein:27, carbs:0, fat:3.5},
+    {name:"Jambon blanc", alias:"jambon", kcal:107, protein:18, carbs:1, fat:3},
+    {name:"Saumon (cuit)", alias:"poisson", kcal:208, protein:22, carbs:0, fat:13},
+    {name:"Thon au naturel (égoutté)", alias:"thon boite conserve", kcal:116, protein:26, carbs:0, fat:1},
+    {name:"Cabillaud (cuit)", alias:"poisson blanc", kcal:105, protein:23, carbs:0, fat:1},
+    {name:"Crevettes (cuites)", alias:"crevette", kcal:99, protein:21, carbs:0.2, fat:1},
+    {name:"Tofu nature", alias:"", kcal:76, protein:8, carbs:1.9, fat:4.8},
+    {name:"Lentilles (cuites)", alias:"legumineuse", kcal:116, protein:9, carbs:20, fat:0.4},
+    {name:"Pois chiches (cuits)", alias:"", kcal:164, protein:8.9, carbs:27, fat:2.6},
+    {name:"Haricots rouges (cuits)", alias:"", kcal:127, protein:8.7, carbs:22.8, fat:0.5},
+    {name:"Lait demi-écrémé", alias:"", kcal:46, protein:3.3, carbs:4.8, fat:1.6},
+    {name:"Lait entier", alias:"", kcal:64, protein:3.2, carbs:4.8, fat:3.6},
+    {name:"Yaourt nature", alias:"", kcal:61, protein:3.5, carbs:4.7, fat:3.3},
+    {name:"Yaourt grec", alias:"", kcal:97, protein:9, carbs:4, fat:5},
+    {name:"Skyr", alias:"", kcal:63, protein:11, carbs:4, fat:0.2},
+    {name:"Fromage blanc 0%", alias:"", kcal:45, protein:8, carbs:4, fat:0.2},
+    {name:"Emmental", alias:"gruyere fromage", kcal:380, protein:28, carbs:0.5, fat:30},
+    {name:"Mozzarella", alias:"fromage", kcal:280, protein:22, carbs:2.2, fat:20},
+    {name:"Beurre", alias:"", kcal:717, protein:0.9, carbs:0.1, fat:81},
+    {name:"Whey (poudre)", alias:"proteine whey", kcal:380, protein:75, carbs:8, fat:6},
+    {name:"Riz blanc (cuit)", alias:"riz", kcal:130, protein:2.7, carbs:28, fat:0.3},
+    {name:"Riz complet (cuit)", alias:"riz", kcal:123, protein:2.7, carbs:25.6, fat:1},
+    {name:"Pâtes (cuites)", alias:"pates", kcal:131, protein:5, carbs:25, fat:1.1},
+    {name:"Pain blanc", alias:"pain", kcal:265, protein:9, carbs:49, fat:3.2},
+    {name:"Pain complet", alias:"pain", kcal:247, protein:13, carbs:41, fat:3.4},
+    {name:"Flocons d'avoine (secs)", alias:"avoine porridge", kcal:389, protein:16.9, carbs:66, fat:6.9},
+    {name:"Quinoa (cuit)", alias:"", kcal:120, protein:4.4, carbs:21.3, fat:1.9},
+    {name:"Pomme de terre (cuite)", alias:"patate", kcal:87, protein:1.9, carbs:20, fat:0.1},
+    {name:"Patate douce (cuite)", alias:"", kcal:90, protein:2, carbs:21, fat:0.1},
+    {name:"Semoule (cuite)", alias:"couscous", kcal:112, protein:3.8, carbs:23, fat:0.2},
+    {name:"Banane", alias:"", kcal:89, protein:1.1, carbs:23, fat:0.3},
+    {name:"Pomme", alias:"", kcal:52, protein:0.3, carbs:14, fat:0.2},
+    {name:"Avocat", alias:"", kcal:160, protein:2, carbs:8.5, fat:14.7},
+    {name:"Orange", alias:"", kcal:47, protein:0.9, carbs:12, fat:0.1},
+    {name:"Brocoli (cuit)", alias:"", kcal:35, protein:2.4, carbs:7, fat:0.4},
+    {name:"Haricots verts (cuits)", alias:"", kcal:31, protein:1.8, carbs:7, fat:0.1},
+    {name:"Carotte (crue)", alias:"", kcal:41, protein:0.9, carbs:10, fat:0.2},
+    {name:"Tomate", alias:"", kcal:18, protein:0.9, carbs:3.9, fat:0.2},
+    {name:"Épinards (cuits)", alias:"epinard", kcal:23, protein:3, carbs:3.8, fat:0.4},
+    {name:"Salade verte", alias:"laitue", kcal:15, protein:1.4, carbs:2.9, fat:0.2},
+    {name:"Courgette (cuite)", alias:"", kcal:17, protein:1.2, carbs:3.1, fat:0.2},
+    {name:"Amandes", alias:"", kcal:579, protein:21, carbs:22, fat:50},
+    {name:"Noix", alias:"", kcal:654, protein:15, carbs:14, fat:65},
+    {name:"Cacahuètes", alias:"", kcal:567, protein:26, carbs:16, fat:49},
+    {name:"Beurre de cacahuète", alias:"peanut butter", kcal:588, protein:25, carbs:20, fat:50},
+    {name:"Huile d'olive", alias:"huile", kcal:884, protein:0, carbs:0, fat:100}
+  ];
+
+  function searchLocalFoods(query){
+    var q = query.toLowerCase().trim();
+    if(!q) return [];
+    var scored = LOCAL_FOOD_DB.map(function(f){
+      var name = f.name.toLowerCase();
+      var hay = name + ' ' + (f.alias||'').toLowerCase();
+      var score = -1;
+      if(name.indexOf(q) === 0) score = 0;
+      else if(hay.indexOf(q) !== -1) score = 1;
+      return { f: f, score: score };
+    }).filter(function(x){ return x.score >= 0; })
+      .sort(function(a,b){ return a.score - b.score; })
+      .slice(0, 8)
+      .map(function(x){
+        return { name: x.f.name, brand:'', source:'local', kcal100:x.f.kcal, protein100:x.f.protein, carbs100:x.f.carbs, fat100:x.f.fat };
+      });
+    return scored;
+  }
+
   function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4); }
   function todayISO(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
   function fmt1(n){ return (Math.round(n*10)/10).toString(); }
@@ -634,7 +713,7 @@
 
   var nutritionSub = 'today'; // today | custom
   var customMeal = {name:'', kcal:'', protein:'', carbs:'', fat:''};
-  var foodSearch = { show:false, query:'', loading:false, results:null, error:null, picked:null, grams:100 };
+  var foodSearch = { show:false, query:'', searched:false, onlineLoading:false, onlineError:null, results:[], picked:null, grams:100 };
 
   function renderNutrition(){
     var iso = todayISO();
@@ -695,24 +774,27 @@
     var html = '<div class="card"><div class="card-title"><h2>Chercher un aliment</h2></div>';
     html += '<div class="field-row" style="align-items:end;">' +
       '<div class="field" style="margin-bottom:0;"><label>Nom de l\'aliment</label><input type="text" id="fs-query" placeholder="ex. yaourt nature" value="'+(foodSearch.query||'')+'"></div>' +
-      '<button class="btn btn-primary" style="height:44px;" data-action="run-food-search">'+(foodSearch.loading?'…':'Chercher')+'</button>' +
+      '<button class="btn btn-primary" style="height:44px;" data-action="run-food-search">Chercher</button>' +
       '</div>';
-    html += '<div class="muted" style="font-size:11px;margin-top:6px;">Recherche dans la base Open Food Facts (valeurs pour 100 g, surtout produits emballés).</div>';
+    html += '<div class="muted" style="font-size:11px;margin-top:6px;">Base d\'aliments courants + Open Food Facts pour les produits emballés (valeurs pour 100 g).</div>';
 
-    if(foodSearch.loading){
-      html += '<div class="empty">Recherche en cours…</div>';
-    } else if(foodSearch.error){
-      html += '<div class="empty"><span class="big">Recherche indisponible</span>'+foodSearch.error+' Utilise la saisie manuelle ci-dessous.</div>';
-    } else if(foodSearch.results && foodSearch.results.length === 0){
-      html += '<div class="empty"><span class="big">Aucun résultat</span>Essaie un autre nom, ou passe en saisie manuelle.</div>';
-    } else if(foodSearch.results && foodSearch.results.length){
-      html += '<div style="margin-top:10px;">' + foodSearch.results.map(function(r, i){
+    var results = foodSearch.results || [];
+    if(results.length){
+      html += '<div style="margin-top:10px;">' + results.map(function(r, i){
         var picked = foodSearch.picked === i;
         return '<div class="list-item" style="'+(picked?'':'cursor:pointer;')+'" data-action="'+(picked?'':'pick-food-result')+'" data-idx="'+i+'">' +
-          '<div class="li-main"><div class="li-title">'+r.name+'</div>' +
+          '<div class="li-main"><div class="li-title">'+r.name+' '+(r.source==='local'?'<span class="badge lime" style="margin-left:4px;">Base</span>':'<span class="badge" style="margin-left:4px;">En ligne</span>')+'</div>' +
           '<div class="li-sub">'+(r.brand?r.brand+' · ':'')+Math.round(r.kcal100)+' kcal /100g · P '+round1(r.protein100)+'g · G '+round1(r.carbs100)+'g · L '+round1(r.fat100)+'g</div></div>' +
           '</div>';
       }).join('') + '</div>';
+    }
+    if(foodSearch.onlineLoading){
+      html += '<div class="muted" style="font-size:12px;padding:10px 0;">Recherche en ligne (Open Food Facts)…</div>';
+    } else if(foodSearch.onlineError && !results.length){
+      html += '<div class="empty"><span class="big">Recherche en ligne indisponible</span>'+foodSearch.onlineError+'</div>';
+    }
+    if(!foodSearch.onlineLoading && foodSearch.searched && !results.length){
+      html += '<div class="empty"><span class="big">Aucun résultat</span>Essaie un autre nom, ou passe en saisie manuelle.</div>';
     }
 
     if(foodSearch.picked != null && foodSearch.results){
@@ -741,10 +823,11 @@
     var query = input ? input.value.trim() : '';
     if(!query){ return; }
     foodSearch.query = query;
-    foodSearch.loading = true;
-    foodSearch.error = null;
-    foodSearch.results = null;
+    foodSearch.searched = true;
+    foodSearch.onlineLoading = true;
+    foodSearch.onlineError = null;
     foodSearch.picked = null;
+    foodSearch.results = searchLocalFoods(query);
     renderNutrition();
 
     var url = 'https://world.openfoodfacts.org/cgi/search.pl?search_terms=' + encodeURIComponent(query) +
@@ -756,13 +839,14 @@
       return res.json();
     }).then(function(data){
       var products = (data && data.products) || [];
-      var results = products.map(function(p){
+      var online = products.map(function(p){
         var n = p.nutriments || {};
         var kcal100 = n['energy-kcal_100g'];
         if(kcal100 == null && n['energy_100g'] != null) kcal100 = n['energy_100g'] / 4.184;
         return {
           name: p.product_name_fr || p.product_name || null,
           brand: p.brands || '',
+          source: 'off',
           kcal100: kcal100,
           protein100: n['proteins_100g'],
           carbs100: n['carbohydrates_100g'],
@@ -772,12 +856,15 @@
         return r.name && r.kcal100 != null && r.protein100 != null && r.carbs100 != null && r.fat100 != null;
       }).slice(0, 6);
 
-      foodSearch.loading = false;
-      foodSearch.results = results;
+      // ignore stale response if the query changed in the meantime
+      if(foodSearch.query !== query) return;
+      foodSearch.onlineLoading = false;
+      foodSearch.results = (foodSearch.results || []).concat(online);
       renderNutrition();
     }).catch(function(err){
-      foodSearch.loading = false;
-      foodSearch.error = 'Connexion au service impossible.';
+      if(foodSearch.query !== query) return;
+      foodSearch.onlineLoading = false;
+      foodSearch.onlineError = 'Connexion au service impossible.';
       renderNutrition();
     });
   }
@@ -799,7 +886,7 @@
       name: r.name + ' (' + g + 'g)',
       kcal: r.kcal100*scale, protein: r.protein100*scale, carbs: r.carbs100*scale, fat: r.fat100*scale
     });
-    foodSearch = { show:false, query:'', loading:false, results:null, error:null, picked:null, grams:100 };
+    foodSearch = { show:false, query:'', searched:false, onlineLoading:false, onlineError:null, results:[], picked:null, grams:100 };
     persist();
     renderNutrition();
     toast(r.name + ' ajouté');
