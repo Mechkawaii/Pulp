@@ -142,6 +142,20 @@
   .stat-tile .v{font-family:"Big Shoulders Display"; font-weight:800; font-size:26px; line-height:1;}
   .stat-tile .u{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em;}
 
+  /* pet */
+  .pet-card{display:flex; gap:14px; align-items:center;}
+  .pet-canvas-wrap{flex:0 0 auto; width:88px; height:88px; display:flex; align-items:center; justify-content:center; background:var(--surface-2); border-radius:16px;}
+  .pet-canvas-wrap canvas{image-rendering:pixelated; width:76px; height:76px; animation:petBreathe 2.6s ease-in-out infinite;}
+  @keyframes petBreathe{0%,100%{transform:translateY(0);}50%{transform:translateY(-3px);}}
+  .pet-info{flex:1; min-width:0;}
+  .pet-name-row{display:flex; align-items:baseline; gap:7px; margin-bottom:2px;}
+  .pet-name{font-family:"Big Shoulders Display"; font-weight:800; font-size:19px;}
+  .pet-stage{font-size:11.5px; color:var(--muted);}
+  .pet-line{font-size:12.5px; color:var(--muted); margin-bottom:8px;}
+  .pet-xptrack{height:6px; border-radius:4px; background:var(--surface-2); overflow:hidden;}
+  .pet-xpfill{height:100%; background:var(--lime-deep); border-radius:4px;}
+  .pet-xplabel{font-size:10.5px; color:var(--muted-2); margin-top:4px; font-family:"IBM Plex Mono";}
+
   /* progress bars */
   .prog-row{margin-bottom:10px;}
   .prog-row:last-child{margin-bottom:0;}
@@ -487,6 +501,178 @@
     return sum / slice.length;
   }
 
+  /* ---------- yuzu pet ---------- */
+
+  var PET_LEVELS = [0,20,50,90,140,200,270,350,450,600];
+  var PET_STAGE_NAMES = {1:'Graine', 2:'Pousse', 3:'Jeune Yuzu', 4:'Yuzu Tonique', 5:'Yuzu Champion'};
+
+  function computePetState(){
+    var workouts = state.logs.workouts.length;
+    var weighIns = state.logs.weight.length;
+    var mealDates = {};
+    state.logs.meals.forEach(function(m){ mealDates[m.date] = true; });
+    var mealDays = Object.keys(mealDates).length;
+    var xp = workouts*15 + weighIns*4 + mealDays*5;
+
+    var level = 1;
+    for(var i=1;i<PET_LEVELS.length;i++){ if(xp >= PET_LEVELS[i]) level = i+1; }
+    var xpForCurrent, xpForNext;
+    if(level < PET_LEVELS.length){
+      xpForCurrent = PET_LEVELS[level-1];
+      xpForNext = PET_LEVELS[level];
+    } else {
+      // beyond the last defined level, each further level costs 200 more XP
+      var lastLevel = PET_LEVELS.length, lastXp = PET_LEVELS[lastLevel-1];
+      while(xp >= lastXp + 200){ lastXp += 200; level++; }
+      xpForCurrent = lastXp;
+      xpForNext = lastXp + 200;
+    }
+
+    var stage = level<=2 ? 1 : level<=4 ? 2 : level<=7 ? 3 : level<=11 ? 4 : 5;
+
+    var todayIso = todayISO();
+    var trainedToday = !!workoutDoneForDate(todayIso);
+    var loggedToday = !!mealDates[todayIso] || state.logs.weight.some(function(w){ return w.date === todayIso; }) || trainedToday;
+    var allDates = state.logs.workouts.map(function(w){ return w.date; })
+      .concat(state.logs.weight.map(function(w){ return w.date; }))
+      .concat(Object.keys(mealDates));
+    allDates.sort();
+    var lastDate = allDates.length ? allDates[allDates.length-1] : null;
+    var daysSince = lastDate ? Math.round((new Date(todayIso+'T12:00:00') - new Date(lastDate+'T12:00:00')) / 86400000) : 99;
+
+    var mood = 'neutre';
+    if(loggedToday) mood = 'energique';
+    else if(daysSince >= 2) mood = 'fatigue';
+
+    return {
+      xp: xp, level: level, stage: stage, stageName: PET_STAGE_NAMES[stage], mood: mood,
+      xpIntoLevel: xp - xpForCurrent, xpSpan: Math.max(1, xpForNext - xpForCurrent)
+    };
+  }
+
+  function petMoodLine(mood, stageName){
+    if(mood === 'energique') return stageName + ' est en pleine forme aujourd\'hui.';
+    if(mood === 'fatigue') return stageName + ' s\'ennuie un peu, ça fait un moment sans nouvelles.';
+    return stageName + ' attend tes données du jour.';
+  }
+
+  function petColors(){
+    var cs = getComputedStyle(document.documentElement);
+    function tok(name, fallback){ var v = cs.getPropertyValue(name); return v ? v.trim() : fallback; }
+    return {
+      lime: tok('--lime', '#c3ff52'),
+      limeDeep: tok('--lime-deep', '#7fae1c'),
+      ink: tok('--ink', '#14150f'),
+      coral: tok('--coral', '#ff6b45'),
+      leaf: '#5f8f2a'
+    };
+  }
+
+  function drawYuzu(canvas, stage, mood){
+    if(!canvas) return;
+    var N = 26, scale = 6;
+    canvas.width = N*scale; canvas.height = N*scale;
+    var ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    var c = petColors();
+    var cx = (N-1)/2, cy = (N-1)/2 + 1;
+    var radii = [0, 5.2, 6.6, 8.0, 9.4, 10.6];
+    var baseR = radii[stage];
+    var bumpAmp = stage>=3 ? 0.35 : 0.15;
+
+    var grid = [];
+    for(var row=0; row<N; row++){
+      grid[row] = [];
+      for(var col=0; col<N; col++){
+        var dx = col-cx, dy = (row-cy)*1.08;
+        var dist = Math.sqrt(dx*dx + dy*dy);
+        var angle = Math.atan2(dy,dx);
+        var r = baseR + Math.sin(angle*7+stage)*bumpAmp;
+        var cell = null;
+        if(dist <= r){
+          var edge = dist > r-1.6;
+          var bottom = dy > 0.4*r;
+          cell = (edge||bottom) ? c.limeDeep : c.lime;
+        } else if(dist <= r+1){
+          cell = c.ink;
+        }
+        grid[row][col] = cell;
+      }
+    }
+
+    function setCell(row,col,color){ row=Math.round(row); col=Math.round(col); if(row>=0&&row<N&&col>=0&&col<N) grid[row][col]=color; }
+
+    var eyeY = cy - baseR*0.15;
+    var eyeDX = baseR*0.36;
+    if(mood === 'fatigue'){
+      setCell(eyeY, cx-eyeDX, c.ink); setCell(eyeY, cx-eyeDX-1, c.ink);
+      setCell(eyeY, cx+eyeDX, c.ink); setCell(eyeY, cx+eyeDX+1, c.ink);
+    } else {
+      setCell(eyeY, cx-eyeDX, c.ink); setCell(eyeY+1, cx-eyeDX, c.ink);
+      setCell(eyeY, cx+eyeDX, c.ink); setCell(eyeY+1, cx+eyeDX, c.ink);
+    }
+
+    var mouthY = cy + baseR*0.18;
+    if(mood === 'energique'){
+      setCell(mouthY, cx-1, c.ink); setCell(mouthY, cx, c.ink); setCell(mouthY, cx+1, c.ink);
+      setCell(mouthY-1, cx-2, c.ink); setCell(mouthY-1, cx+2, c.ink);
+    } else if(mood === 'fatigue'){
+      setCell(mouthY, cx-1, c.ink); setCell(mouthY, cx, c.ink); setCell(mouthY, cx+1, c.ink);
+    } else {
+      setCell(mouthY, cx-1, c.ink); setCell(mouthY, cx, c.ink); setCell(mouthY, cx+1, c.ink);
+      setCell(mouthY+1, cx-2, c.ink); setCell(mouthY+1, cx+2, c.ink);
+    }
+
+    if(stage>=3){
+      setCell(eyeY+2, cx-eyeDX-2, c.coral);
+      setCell(eyeY+2, cx+eyeDX+2, c.coral);
+    }
+
+    if(stage<=3){
+      var topRow = cy-baseR-1;
+      setCell(topRow, cx, c.leaf);
+      setCell(topRow-1, cx, c.leaf);
+      setCell(topRow-1, cx+1, c.leaf);
+    }
+
+    if(stage>=4){
+      var bandRow = cy - baseR*0.55;
+      for(var cc = cx-baseR*0.7; cc <= cx+baseR*0.7; cc++){ setCell(bandRow, cc, c.coral); }
+      var armLen = stage===5 ? 3 : 2;
+      for(var a=0;a<armLen;a++){
+        setCell(cy-1, cx-baseR-a, c.limeDeep);
+        setCell(cy-1, cx+baseR+a, c.limeDeep);
+      }
+    }
+
+    if(stage===5){
+      setCell(2,3,c.lime); setCell(1,N-4,c.lime); setCell(N-3,2,c.lime); setCell(3,N-3,c.lime);
+    }
+
+    for(var row2=0; row2<N; row2++){
+      for(var col2=0; col2<N; col2++){
+        if(grid[row2][col2]){
+          ctx.fillStyle = grid[row2][col2];
+          ctx.fillRect(col2*scale, row2*scale, scale, scale);
+        }
+      }
+    }
+  }
+
+  function renderPetCard(){
+    var p = computePetState();
+    var html = '<div class="card pet-card">';
+    html += '<div class="pet-canvas-wrap"><canvas id="pet-canvas" width="1" height="1"></canvas></div>';
+    html += '<div class="pet-info">';
+    html += '<div class="pet-name-row"><span class="pet-name">Yuzu</span><span class="pet-stage">Niveau '+p.level+' · '+p.stageName+'</span></div>';
+    html += '<div class="pet-line">'+petMoodLine(p.mood, p.stageName)+'</div>';
+    html += '<div class="pet-xptrack"><div class="pet-xpfill" style="width:'+clamp(p.xpIntoLevel/p.xpSpan*100,2,100)+'%"></div></div>';
+    html += '<div class="pet-xplabel">'+p.xpIntoLevel+' / '+p.xpSpan+' XP avant le niveau '+(p.level+1)+'</div>';
+    html += '</div></div>';
+    return { html: html, stage: p.stage, mood: p.mood };
+  }
+
   /* ---------- render: shell ---------- */
 
   function applyTheme(choice){
@@ -555,7 +741,9 @@
         '<div class="prog-track"><div class="prog-fill'+(over?' over':'')+'" style="width:'+clamp(pct,0,100)+'%"></div></div></div>';
     };
 
+    var pet = renderPetCard();
     var html = '';
+    html += pet.html;
     html += '<div class="card"><div class="card-title"><h2>Séance du jour</h2>' + (plan ? '<span class="badge'+(done?' lime':'')+'">'+(done?'Faite':'À faire')+'</span>' : '<span class="badge">Repos</span>') + '</div>';
     if(plan){
       html += '<div class="li-title" style="font-size:17px;margin-bottom:4px;">'+plan.label+' · <span class="muted" style="font-weight:400;font-size:13px;">'+(plan.type==='yoga'?'récupération active':'renforcement, full body')+'</span></div>';
@@ -588,6 +776,8 @@
     html += '</div>';
 
     document.getElementById('tab-today').innerHTML = html;
+    var petCanvas = document.getElementById('pet-canvas');
+    if(petCanvas) drawYuzu(petCanvas, pet.stage, pet.mood);
   }
 
   function renderWeightSparkline(){
@@ -1008,7 +1198,7 @@
       return;
     }
     var themeBtn = e.target.closest('.theme-btn');
-    if(themeBtn){ applyTheme(themeBtn.dataset.themeChoice); return; }
+    if(themeBtn){ applyTheme(themeBtn.dataset.themeChoice); renderActiveTab(); return; }
     if(!btn) return;
     var action = btn.dataset.action;
     if(action === 'go-log-today'){ activeTab='workouts'; location.hash='#workouts'; renderShell(); startTodayLog(); }
