@@ -225,6 +225,18 @@
   .toast{position:fixed; left:50%; bottom:calc(78px + env(safe-area-inset-bottom,0px)); transform:translateX(-50%); background:var(--ink); color:var(--bg); font-size:12.5px; font-weight:600; padding:9px 16px; border-radius:20px; z-index:50; opacity:0; pointer-events:none; transition:opacity .2s ease;}
   .toast.show{opacity:1;}
 
+  .scanner-overlay{position:fixed; inset:0; background:rgba(10,10,6,.85); z-index:60; display:flex; align-items:center; justify-content:center; padding:16px;}
+  .scanner-overlay[hidden]{display:none;}
+  .scanner-box{background:var(--surface); border:1px solid var(--line); border-radius:18px; padding:16px; width:100%; max-width:420px; max-height:92vh; overflow-y:auto;}
+  .scanner-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
+  .scanner-head h2{font-size:18px;}
+  #scanner-reader{width:100%; border-radius:12px; overflow:hidden; background:#000; min-height:220px;}
+  #scanner-reader video{border-radius:12px;}
+  .scanner-status{font-size:12.5px; color:var(--muted); margin:10px 0; min-height:16px;}
+  .scanner-status.error{color:var(--bad);}
+  .scanner-manual{border-top:1px solid var(--line); padding-top:12px; margin-top:4px;}
+  .scanner-manual label{margin-bottom:6px;}
+
   @media (prefers-reduced-motion: reduce){ *{transition:none !important; animation:none !important;} }
 </style>
 </head>
@@ -262,6 +274,24 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<div class="scanner-overlay" id="scanner-overlay" hidden>
+  <div class="scanner-box">
+    <div class="scanner-head">
+      <h2>Scanner un code-barre</h2>
+      <button class="btn-ghost" data-action="close-scanner" aria-label="Fermer">✕</button>
+    </div>
+    <div id="scanner-reader"></div>
+    <div class="scanner-status" id="scanner-status"></div>
+    <div class="scanner-manual">
+      <label>Ou saisis le code-barre</label>
+      <div class="field-row">
+        <div class="field" style="margin-bottom:0;"><input type="text" inputmode="numeric" id="scanner-manual-input" placeholder="ex. 3017620422003"></div>
+        <button class="btn btn-primary" data-action="submit-manual-barcode">Valider</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <nav class="tabbar"><div class="tabbar-inner">
   <button class="tab-btn" data-tab="today">
@@ -925,7 +955,10 @@
     html += '<div class="tag-row">' + state.foodLibrary.map(function(f){
       return '<div class="food-chip" data-action="add-food" data-id="'+f.id+'">'+f.name+' <b>'+f.kcal+' kcal</b></div>';
     }).join('') + '</div>';
-    html += '<button class="btn btn-block" data-action="show-food-search">+ Chercher un aliment</button>';
+    html += '<div class="btn-row">' +
+      '<button class="btn" style="flex:1;" data-action="show-food-search">Chercher un aliment</button>' +
+      '<button class="btn btn-lime" style="flex:1;" data-action="scan-barcode">📷 Scanner</button>' +
+      '</div>';
     html += '</div>';
 
     if(foodSearch.show){
@@ -1086,6 +1119,143 @@
     toast(r.name + ' ajouté');
   }
 
+  /* ---------- barcode scanner ---------- */
+
+  var qrLibPromise = null;
+  var scannerInstance = null;
+  var scanHandled = false;
+
+  function loadQrLib(){
+    if(window.Html5Qrcode) return Promise.resolve();
+    if(qrLibPromise) return qrLibPromise;
+    qrLibPromise = new Promise(function(resolve, reject){
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js';
+      s.onload = function(){ resolve(); };
+      s.onerror = function(){ qrLibPromise = null; reject(new Error('load-fail')); };
+      document.head.appendChild(s);
+    });
+    return qrLibPromise;
+  }
+
+  function setScannerStatus(msg, isError){
+    var el = document.getElementById('scanner-status');
+    if(!el) return;
+    el.textContent = msg || '';
+    el.className = 'scanner-status' + (isError ? ' error' : '');
+  }
+
+  function openScanner(){
+    scanHandled = false;
+    var overlay = document.getElementById('scanner-overlay');
+    var input = document.getElementById('scanner-manual-input');
+    if(input) input.value = '';
+    if(overlay) overlay.hidden = false;
+    setScannerStatus('Chargement du scanner…');
+    loadQrLib().then(function(){
+      startScanner();
+    }).catch(function(){
+      setScannerStatus('Scanner indisponible (pas de connexion). Utilise la saisie manuelle ci-dessous.', true);
+    });
+  }
+
+  function startScanner(){
+    if(!document.getElementById('scanner-reader')) return;
+    try{
+      var formats = (window.Html5QrcodeSupportedFormats) ? [
+        Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E,
+        Html5QrcodeSupportedFormats.CODE_128
+      ] : null;
+      scannerInstance = formats ? new Html5Qrcode('scanner-reader', { formatsToSupport: formats, verbose:false })
+                                 : new Html5Qrcode('scanner-reader');
+    } catch(e){
+      setScannerStatus('Scanner indisponible sur ce navigateur. Utilise la saisie manuelle ci-dessous.', true);
+      return;
+    }
+    setScannerStatus('Vise le code-barre avec la caméra…');
+    scannerInstance.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 260, height: 160 } },
+      function(decodedText){
+        if(scanHandled) return;
+        scanHandled = true;
+        setScannerStatus('Code détecté : ' + decodedText);
+        closeScanner();
+        lookupBarcode(decodedText);
+      },
+      function(){ /* ignore per-frame decode misses */ }
+    ).catch(function(){
+      setScannerStatus('Caméra inaccessible (autorisation refusée ou indisponible). Utilise la saisie manuelle ci-dessous.', true);
+    });
+  }
+
+  function closeScanner(){
+    var overlay = document.getElementById('scanner-overlay');
+    if(overlay) overlay.hidden = true;
+    var inst = scannerInstance;
+    scannerInstance = null;
+    if(inst){
+      inst.stop().then(function(){ try{ inst.clear(); }catch(e){} }).catch(function(){});
+    }
+  }
+
+  function lookupBarcode(code){
+    code = (code || '').trim();
+    if(!code) return;
+    activeTab = 'nutrition'; location.hash = '#nutrition'; renderShell();
+    foodSearch.show = true;
+    foodSearch.query = code;
+    foodSearch.searched = true;
+    foodSearch.onlineLoading = true;
+    foodSearch.onlineError = null;
+    foodSearch.results = [];
+    foodSearch.picked = null;
+    renderNutrition();
+
+    var url = 'https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(code) + '.json' +
+      '?fields=product_name,product_name_fr,brands,nutriments';
+
+    fetch(url).then(function(res){
+      if(!res.ok) throw new Error('http ' + res.status);
+      return res.json();
+    }).then(function(data){
+      foodSearch.onlineLoading = false;
+      if(!data || data.status !== 1 || !data.product){
+        foodSearch.onlineError = 'Produit introuvable pour le code ' + code + '. Essaie la recherche par nom ou la saisie manuelle.';
+        renderNutrition();
+        return;
+      }
+      var p = data.product;
+      var n = p.nutriments || {};
+      var kcal100 = n['energy-kcal_100g'];
+      if(kcal100 == null && n['energy_100g'] != null) kcal100 = n['energy_100g'] / 4.184;
+      var result = {
+        name: p.product_name_fr || p.product_name || ('Produit ' + code),
+        brand: p.brands || '',
+        source: 'off',
+        kcal100: kcal100,
+        protein100: n['proteins_100g'],
+        carbs100: n['carbohydrates_100g'],
+        fat100: n['fat_100g']
+      };
+      if(result.kcal100 == null || result.protein100 == null || result.carbs100 == null || result.fat100 == null){
+        foodSearch.onlineError = 'Valeurs nutritionnelles incomplètes pour ce produit. Saisis-les manuellement.';
+        renderNutrition();
+        return;
+      }
+      foodSearch.results = [result];
+      foodSearch.picked = 0;
+      foodSearch.grams = 100;
+      renderNutrition();
+      toast(result.name + ' trouvé');
+    }).catch(function(){
+      foodSearch.onlineLoading = false;
+      foodSearch.onlineError = 'Connexion au service impossible.';
+      renderNutrition();
+    });
+  }
+
   function addFoodToLog(foodId){
     var f = state.foodLibrary.find(function(x){ return x.id === foodId; });
     if(!f) return;
@@ -1215,6 +1385,13 @@
     else if(action === 'add-food'){ addFoodToLog(btn.dataset.id); }
     else if(action === 'show-food-search'){ foodSearch.show = true; renderNutrition(); var q=document.getElementById('fs-query'); if(q) q.focus(); }
     else if(action === 'run-food-search'){ runFoodSearch(); }
+    else if(action === 'scan-barcode'){ openScanner(); }
+    else if(action === 'close-scanner'){ closeScanner(); }
+    else if(action === 'submit-manual-barcode'){
+      var mi = document.getElementById('scanner-manual-input');
+      var code = mi ? mi.value.trim() : '';
+      if(code){ closeScanner(); lookupBarcode(code); }
+    }
     else if(action === 'pick-food-result'){ pickFoodResult(parseInt(btn.dataset.idx,10)); }
     else if(action === 'add-search-result'){ addSearchResultToLog(); }
     else if(action === 'show-custom-meal'){ customMeal.show = true; renderNutrition(); }
