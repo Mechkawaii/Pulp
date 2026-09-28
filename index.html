@@ -634,6 +634,7 @@
 
   var nutritionSub = 'today'; // today | custom
   var customMeal = {name:'', kcal:'', protein:'', carbs:'', fat:''};
+  var foodSearch = { show:false, query:'', loading:false, results:null, error:null, picked:null, grams:100 };
 
   function renderNutrition(){
     var iso = todayISO();
@@ -654,11 +655,15 @@
     html += '<div class="tag-row">' + state.foodLibrary.map(function(f){
       return '<div class="food-chip" data-action="add-food" data-id="'+f.id+'">'+f.name+' <b>'+f.kcal+' kcal</b></div>';
     }).join('') + '</div>';
-    html += '<button class="btn btn-block" data-action="show-custom-meal">+ Aliment personnalisé</button>';
+    html += '<button class="btn btn-block" data-action="show-food-search">+ Chercher un aliment</button>';
     html += '</div>';
 
+    if(foodSearch.show){
+      html += renderFoodSearch();
+    }
+
     if(customMeal.show){
-      html += '<div class="card"><div class="card-title"><h2>Aliment personnalisé</h2></div>';
+      html += '<div class="card"><div class="card-title"><h2>Saisie manuelle</h2></div>';
       html += '<div class="field"><label>Nom</label><input type="text" id="cm-name" value="'+customMeal.name+'"></div>';
       html += '<div class="field-row"><div class="field"><label>Kcal</label><input type="number" id="cm-kcal" value="'+customMeal.kcal+'"></div>' +
         '<div class="field"><label>Protéines g</label><input type="number" id="cm-protein" value="'+customMeal.protein+'"></div></div>';
@@ -682,6 +687,122 @@
     html += '</div>';
 
     document.getElementById('tab-nutrition').innerHTML = html;
+  }
+
+  function round1(n){ return Math.round(n*10)/10; }
+
+  function renderFoodSearch(){
+    var html = '<div class="card"><div class="card-title"><h2>Chercher un aliment</h2></div>';
+    html += '<div class="field-row" style="align-items:end;">' +
+      '<div class="field" style="margin-bottom:0;"><label>Nom de l\'aliment</label><input type="text" id="fs-query" placeholder="ex. yaourt nature" value="'+(foodSearch.query||'')+'"></div>' +
+      '<button class="btn btn-primary" style="height:44px;" data-action="run-food-search">'+(foodSearch.loading?'…':'Chercher')+'</button>' +
+      '</div>';
+    html += '<div class="muted" style="font-size:11px;margin-top:6px;">Recherche dans la base Open Food Facts (valeurs pour 100 g, surtout produits emballés).</div>';
+
+    if(foodSearch.loading){
+      html += '<div class="empty">Recherche en cours…</div>';
+    } else if(foodSearch.error){
+      html += '<div class="empty"><span class="big">Recherche indisponible</span>'+foodSearch.error+' Utilise la saisie manuelle ci-dessous.</div>';
+    } else if(foodSearch.results && foodSearch.results.length === 0){
+      html += '<div class="empty"><span class="big">Aucun résultat</span>Essaie un autre nom, ou passe en saisie manuelle.</div>';
+    } else if(foodSearch.results && foodSearch.results.length){
+      html += '<div style="margin-top:10px;">' + foodSearch.results.map(function(r, i){
+        var picked = foodSearch.picked === i;
+        return '<div class="list-item" style="'+(picked?'':'cursor:pointer;')+'" data-action="'+(picked?'':'pick-food-result')+'" data-idx="'+i+'">' +
+          '<div class="li-main"><div class="li-title">'+r.name+'</div>' +
+          '<div class="li-sub">'+(r.brand?r.brand+' · ':'')+Math.round(r.kcal100)+' kcal /100g · P '+round1(r.protein100)+'g · G '+round1(r.carbs100)+'g · L '+round1(r.fat100)+'g</div></div>' +
+          '</div>';
+      }).join('') + '</div>';
+    }
+
+    if(foodSearch.picked != null && foodSearch.results){
+      var r = foodSearch.results[foodSearch.picked];
+      var g = foodSearch.grams || 100;
+      var scale = g/100;
+      html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">';
+      html += '<div class="field"><label>Quantité (g)</label><input type="number" id="fs-grams" value="'+g+'" data-action-input="grams"></div>';
+      html += '<div class="stat-row" style="margin-bottom:12px;">' +
+        '<div class="stat-tile"><div class="v" id="fs-v-kcal">'+Math.round(r.kcal100*scale)+'</div><div class="u">kcal</div></div>' +
+        '<div class="stat-tile"><div class="v" id="fs-v-protein">'+round1(r.protein100*scale)+'g</div><div class="u">protéines</div></div>' +
+        '<div class="stat-tile"><div class="v" id="fs-v-carbs">'+round1(r.carbs100*scale)+'g</div><div class="u">glucides</div></div>' +
+        '<div class="stat-tile"><div class="v" id="fs-v-fat">'+round1(r.fat100*scale)+'g</div><div class="u">lipides</div></div>' +
+        '</div>';
+      html += '<button class="btn btn-lime btn-block" data-action="add-search-result">Ajouter au journal</button>';
+      html += '</div>';
+    }
+
+    html += '<button class="btn-ghost" style="margin-top:10px;" data-action="show-custom-meal">Saisir les valeurs manuellement à la place</button>';
+    html += '</div>';
+    return html;
+  }
+
+  function runFoodSearch(){
+    var input = document.getElementById('fs-query');
+    var query = input ? input.value.trim() : '';
+    if(!query){ return; }
+    foodSearch.query = query;
+    foodSearch.loading = true;
+    foodSearch.error = null;
+    foodSearch.results = null;
+    foodSearch.picked = null;
+    renderNutrition();
+
+    var url = 'https://world.openfoodfacts.org/cgi/search.pl?search_terms=' + encodeURIComponent(query) +
+      '&search_simple=1&action=process&json=1&page_size=8&lc=fr' +
+      '&fields=product_name,product_name_fr,brands,nutriments';
+
+    fetch(url).then(function(res){
+      if(!res.ok) throw new Error('http ' + res.status);
+      return res.json();
+    }).then(function(data){
+      var products = (data && data.products) || [];
+      var results = products.map(function(p){
+        var n = p.nutriments || {};
+        var kcal100 = n['energy-kcal_100g'];
+        if(kcal100 == null && n['energy_100g'] != null) kcal100 = n['energy_100g'] / 4.184;
+        return {
+          name: p.product_name_fr || p.product_name || null,
+          brand: p.brands || '',
+          kcal100: kcal100,
+          protein100: n['proteins_100g'],
+          carbs100: n['carbohydrates_100g'],
+          fat100: n['fat_100g']
+        };
+      }).filter(function(r){
+        return r.name && r.kcal100 != null && r.protein100 != null && r.carbs100 != null && r.fat100 != null;
+      }).slice(0, 6);
+
+      foodSearch.loading = false;
+      foodSearch.results = results;
+      renderNutrition();
+    }).catch(function(err){
+      foodSearch.loading = false;
+      foodSearch.error = 'Connexion au service impossible.';
+      renderNutrition();
+    });
+  }
+
+  function pickFoodResult(idx){
+    foodSearch.picked = idx;
+    foodSearch.grams = 100;
+    renderNutrition();
+  }
+
+  function addSearchResultToLog(){
+    if(foodSearch.picked == null || !foodSearch.results) return;
+    var r = foodSearch.results[foodSearch.picked];
+    var gramsInput = document.getElementById('fs-grams');
+    var g = gramsInput ? (parseFloat(gramsInput.value) || 0) : (foodSearch.grams || 100);
+    var scale = g/100;
+    state.logs.meals.push({
+      id: uid(), date: todayISO(),
+      name: r.name + ' (' + g + 'g)',
+      kcal: r.kcal100*scale, protein: r.protein100*scale, carbs: r.carbs100*scale, fat: r.fat100*scale
+    });
+    foodSearch = { show:false, query:'', loading:false, results:null, error:null, picked:null, grams:100 };
+    persist();
+    renderNutrition();
+    toast(r.name + ' ajouté');
   }
 
   function addFoodToLog(foodId){
@@ -811,6 +932,10 @@
     else if(action === 'save-workout'){ saveWorkout(); }
     else if(action === 'go-add-meal'){ activeTab='nutrition'; location.hash='#nutrition'; renderShell(); renderActiveTab(); }
     else if(action === 'add-food'){ addFoodToLog(btn.dataset.id); }
+    else if(action === 'show-food-search'){ foodSearch.show = true; renderNutrition(); var q=document.getElementById('fs-query'); if(q) q.focus(); }
+    else if(action === 'run-food-search'){ runFoodSearch(); }
+    else if(action === 'pick-food-result'){ pickFoodResult(parseInt(btn.dataset.idx,10)); }
+    else if(action === 'add-search-result'){ addSearchResultToLog(); }
     else if(action === 'show-custom-meal'){ customMeal.show = true; renderNutrition(); }
     else if(action === 'save-custom-meal'){ saveCustomMeal(); }
     else if(action === 'remove-meal'){ removeMeal(btn.dataset.id); }
@@ -824,6 +949,25 @@
       var exIdx = parseInt(t.dataset.ex,10), sIdx = parseInt(t.dataset.set,10);
       var val = t.value === '' ? null : parseFloat(t.value);
       logDraft.exercises[exIdx].sets[sIdx][t.dataset.setField] = val;
+    }
+    else if(t.id === 'fs-grams' && foodSearch.picked != null && foodSearch.results){
+      var g = parseFloat(t.value) || 0;
+      foodSearch.grams = g;
+      var r = foodSearch.results[foodSearch.picked];
+      var scale = g/100;
+      var elK = document.getElementById('fs-v-kcal'), elP = document.getElementById('fs-v-protein'),
+          elC = document.getElementById('fs-v-carbs'), elF = document.getElementById('fs-v-fat');
+      if(elK) elK.textContent = Math.round(r.kcal100*scale);
+      if(elP) elP.textContent = round1(r.protein100*scale)+'g';
+      if(elC) elC.textContent = round1(r.carbs100*scale)+'g';
+      if(elF) elF.textContent = round1(r.fat100*scale)+'g';
+    }
+  });
+
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && e.target && e.target.id === 'fs-query'){
+      e.preventDefault();
+      runFoodSearch();
     }
   });
 
