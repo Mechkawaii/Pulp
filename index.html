@@ -262,6 +262,9 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/></svg>
         </button>
       </div>
+      <button class="btn-ghost" data-action="open-profile-editor" aria-label="Mon profil et objectifs" title="Mon profil" style="margin-left:6px;">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
     </div>
   </div>
 
@@ -290,6 +293,50 @@
         <button class="btn btn-primary" data-action="submit-manual-barcode">Valider</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="scanner-overlay" id="profile-overlay" hidden>
+  <div class="scanner-box">
+    <div class="scanner-head">
+      <h2>Mon profil &amp; objectifs</h2>
+      <button class="btn-ghost" data-action="close-profile-editor" aria-label="Fermer">✕</button>
+    </div>
+    <div class="muted" style="font-size:11.5px;margin-bottom:12px;">Calcule tes objectifs (métabolisme de base + activité + surplus de prise de masse). Modifiable à tout moment.</div>
+    <div class="field-row">
+      <div class="field"><label>Sexe</label>
+        <select id="profile-sex">
+          <option value="h">Homme</option>
+          <option value="f">Femme</option>
+        </select>
+      </div>
+      <div class="field"><label>Âge</label><input type="number" id="profile-age" inputmode="numeric" placeholder="ex. 28"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Taille (cm)</label><input type="number" id="profile-height" inputmode="numeric" placeholder="ex. 178"></div>
+      <div class="field"><label>Poids (kg)</label><input type="number" id="profile-weight" inputmode="decimal" step="0.1" placeholder="ex. 78.5"></div>
+    </div>
+    <div class="field">
+      <label>Niveau d'activité</label>
+      <select id="profile-activity">
+        <option value="1.2">Sédentaire (peu ou pas de sport)</option>
+        <option value="1.375">Légèrement actif (sport léger 1-3j/sem)</option>
+        <option value="1.55" selected>Modérément actif (sport modéré 3-5j/sem)</option>
+        <option value="1.725">Très actif (sport intense 6-7j/sem)</option>
+        <option value="1.9">Extrêmement actif (sport + métier physique)</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Surplus (kcal/j)</label><input type="number" id="profile-surplus" value="400"></div>
+      <div class="field"><label>Protéines (g/kg)</label><input type="number" id="profile-protein" step="0.1" value="2.0"></div>
+    </div>
+    <div class="stat-row" style="margin:12px 0;">
+      <div class="stat-tile"><div class="v" id="profile-preview-kcal">–</div><div class="u">kcal</div></div>
+      <div class="stat-tile"><div class="v" id="profile-preview-protein">–</div><div class="u">protéines</div></div>
+      <div class="stat-tile"><div class="v" id="profile-preview-carbs">–</div><div class="u">glucides</div></div>
+      <div class="stat-tile"><div class="v" id="profile-preview-fat">–</div><div class="u">lipides</div></div>
+    </div>
+    <button class="btn btn-lime btn-block" data-action="save-profile-targets">Enregistrer mes objectifs</button>
   </div>
 </div>
 
@@ -520,6 +567,85 @@
 
   function weightSorted(){
     return state.logs.weight.slice().sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+  }
+
+  /* ---------- profil & objectifs ---------- */
+
+  function computeTargetsFromStats(input){
+    var isMale = input.sex === 'h';
+    var bmr = 10*input.weight + 6.25*input.height - 5*input.age + (isMale ? 5 : -161);
+    var tdee = bmr * input.activity;
+    var targetKcal = Math.round(tdee + input.surplus);
+    var targetProtein = Math.round(input.weight * input.proteinPerKg);
+    var targetFat = Math.round((targetKcal * 0.25) / 9);
+    var kcalFromProtFat = targetProtein*4 + targetFat*9;
+    var targetCarbs = Math.round(Math.max(0, targetKcal - kcalFromProtFat) / 4);
+    return { targetKcal:targetKcal, targetProtein:targetProtein, targetCarbs:targetCarbs, targetFat:targetFat };
+  }
+
+  function readProfileForm(){
+    var sexEl = document.getElementById('profile-sex');
+    if(!sexEl) return null;
+    var sex = sexEl.value;
+    var age = parseFloat(document.getElementById('profile-age').value);
+    var height = parseFloat(document.getElementById('profile-height').value);
+    var weight = parseFloat(document.getElementById('profile-weight').value);
+    var activity = parseFloat(document.getElementById('profile-activity').value);
+    var surplus = parseFloat(document.getElementById('profile-surplus').value);
+    var proteinPerKg = parseFloat(document.getElementById('profile-protein').value);
+    if(!age || !height || !weight || !activity || isNaN(surplus) || !proteinPerKg) return null;
+    return { sex:sex, age:age, height:height, weight:weight, activity:activity, surplus:surplus, proteinPerKg:proteinPerKg };
+  }
+
+  function updateProfilePreview(){
+    var kcalEl = document.getElementById('profile-preview-kcal');
+    if(!kcalEl) return;
+    var pEl = document.getElementById('profile-preview-protein'),
+        cEl = document.getElementById('profile-preview-carbs'),
+        fEl = document.getElementById('profile-preview-fat');
+    var input = readProfileForm();
+    if(!input){ kcalEl.textContent='–'; pEl.textContent='–'; cEl.textContent='–'; fEl.textContent='–'; return; }
+    var t = computeTargetsFromStats(input);
+    kcalEl.textContent = t.targetKcal;
+    pEl.textContent = t.targetProtein + 'g';
+    cEl.textContent = t.targetCarbs + 'g';
+    fEl.textContent = t.targetFat + 'g';
+  }
+
+  function openProfileEditor(){
+    var b = state.profile.bodyStats || {};
+    document.getElementById('profile-sex').value = b.sex || 'h';
+    document.getElementById('profile-age').value = b.age || '';
+    document.getElementById('profile-height').value = b.heightCm || '';
+    var ws = weightSorted();
+    var lastWeight = ws.length ? ws[ws.length-1].kg : null;
+    document.getElementById('profile-weight').value = b.weightKg || lastWeight || '';
+    document.getElementById('profile-activity').value = b.activity || '1.55';
+    document.getElementById('profile-surplus').value = (b.surplus != null) ? b.surplus : 400;
+    document.getElementById('profile-protein').value = (b.proteinPerKg != null) ? b.proteinPerKg : 2.0;
+    updateProfilePreview();
+    document.getElementById('profile-overlay').hidden = false;
+  }
+
+  function closeProfileEditor(){
+    var overlay = document.getElementById('profile-overlay');
+    if(overlay) overlay.hidden = true;
+  }
+
+  function saveProfileTargets(){
+    var input = readProfileForm();
+    if(!input){ toast('Renseigne âge, taille et poids pour calculer.'); return; }
+    var t = computeTargetsFromStats(input);
+    state.profile.bodyStats = { sex:input.sex, age:input.age, heightCm:input.height, weightKg:input.weight, activity:input.activity, surplus:input.surplus, proteinPerKg:input.proteinPerKg };
+    state.profile.targetKcal = t.targetKcal;
+    state.profile.targetProtein = t.targetProtein;
+    state.profile.targetCarbs = t.targetCarbs;
+    state.profile.targetFat = t.targetFat;
+    persist();
+    closeProfileEditor();
+    renderShell();
+    renderActiveTab();
+    toast('Objectifs mis à jour : ' + t.targetKcal + ' kcal/j');
   }
 
   function rollingAvg7(entries, idx){
@@ -1509,6 +1635,9 @@
     else if(action === 'remove-meal'){ removeMeal(btn.dataset.id); }
     else if(action === 'go-add-weight'){ activeTab='weight'; location.hash='#weight'; renderShell(); renderActiveTab(); }
     else if(action === 'save-weight'){ saveWeight(); }
+    else if(action === 'open-profile-editor'){ openProfileEditor(); }
+    else if(action === 'close-profile-editor'){ closeProfileEditor(); }
+    else if(action === 'save-profile-targets'){ saveProfileTargets(); }
   });
 
   document.addEventListener('input', function(e){
@@ -1518,6 +1647,7 @@
       var val = t.value === '' ? null : parseFloat(t.value);
       logDraft.exercises[exIdx].sets[sIdx][t.dataset.setField] = val;
     }
+    else if(t.id && t.id.indexOf('profile-') === 0){ updateProfilePreview(); }
     else if(t.id === 'fs-grams' && foodSearch.picked != null && foodSearch.results){
       var g = parseFloat(t.value) || 0;
       foodSearch.grams = g;
@@ -1537,6 +1667,11 @@
       e.preventDefault();
       runFoodSearch();
     }
+  });
+
+  document.addEventListener('change', function(e){
+    var t = e.target;
+    if(t.id && t.id.indexOf('profile-') === 0){ updateProfilePreview(); }
   });
 
   function renderActiveTab(){
