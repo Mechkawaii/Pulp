@@ -936,6 +936,112 @@
   var customMeal = {name:'', kcal:'', protein:'', carbs:'', fat:''};
   var foodSearch = { show:false, query:'', searched:false, onlineLoading:false, onlineError:null, results:[], picked:null, grams:100 };
 
+  /* ---------- suggestions de repas ---------- */
+
+  // Repas types (valeurs realistes pour une portion), classes par moment de la journee.
+  var MENU_TEMPLATES = [
+    {id:'t1', moment:'petit-dej', name:"Avoine, œufs & banane", desc:"Flocons d'avoine 100g, 2 œufs, 1 banane, 200ml lait, 1 c.à.c miel", kcal:673, protein:31, carbs:100, fat:20},
+    {id:'t2', moment:'petit-dej', name:"Avoine légère & œufs", desc:"Flocons d'avoine 90g, 2 œufs, 1 banane, 1 c.à.c miel", kcal:630, protein:27, carbs:98, fat:17},
+    {id:'t3', moment:'collation', name:"Whey & beurre de cacahuète", desc:"1 dose whey, beurre de cacahuète 25g, pain complet 40g", kcal:373, protein:39, carbs:33, fat:20},
+    {id:'t4', moment:'collation', name:"Yaourt grec & amandes", desc:"Yaourt grec 200g, amandes 20g, 1 c.à.c miel", kcal:340, protein:22, carbs:20, fat:20},
+    {id:'t5', moment:'collation', name:"Fromage blanc & pain", desc:"Fromage blanc 200g, miel 1 c.à.s, pain complet 60g", kcal:356, protein:21, carbs:46, fat:9},
+    {id:'t6', moment:'collation', name:"Whey & banane", desc:"1 dose whey, 1 banane", kcal:209, protein:25, carbs:25, fat:2},
+    {id:'t7', moment:'dejeuner', name:"Poulet, riz & légumes", desc:"Poulet 180g, riz blanc cuit 300g, légumes vapeur 200g, huile d'olive 1 c.à.s", kcal:835, protein:68, carbs:94, fat:18},
+    {id:'t8', moment:'dejeuner', name:"Bœuf, riz & légumes", desc:"Bœuf haché 5% 160g, riz blanc cuit 280g, légumes vapeur 200g, huile d'olive 1 c.à.c", kcal:770, protein:53, carbs:88, fat:21},
+    {id:'t9', moment:'dejeuner', name:"Poulet & patate douce", desc:"Poulet 150g, patate douce 280g, légumes vapeur 200g, huile d'olive 1 c.à.c", kcal:630, protein:56, carbs:69, fat:14},
+    {id:'t10', moment:'diner', name:"Saumon & pâtes", desc:"Saumon 160g, pâtes cuites 280g, légumes vapeur 150g, huile d'olive 1 c.à.c", kcal:815, protein:52, carbs:78, fat:32},
+    {id:'t11', moment:'diner', name:"Dinde & riz léger", desc:"Dinde 150g, riz blanc cuit 150g, légumes vapeur 150g", kcal:442, protein:51, carbs:50, fat:2},
+    {id:'t12', moment:'collation', name:"Whey & patate douce", desc:"1 dose whey, patate douce 250g, miel 1 c.à.s, 1 banane", kcal:411, protein:13, carbs:91, fat:1}
+  ];
+
+  var suggestExclude = [];
+  var suggestShown = [];
+  var suggestDate = null;
+
+  function remainingMacros(iso){
+    var totals = totalsForDate(iso);
+    var p = state.profile;
+    return {
+      kcal: p.targetKcal - totals.kcal,
+      protein: p.targetProtein - totals.protein,
+      carbs: p.targetCarbs - totals.carbs,
+      fat: p.targetFat - totals.fat
+    };
+  }
+
+  function currentMealMoment(){
+    var h = new Date().getHours();
+    if(h < 11) return 'petit-dej';
+    if(h < 15) return 'dejeuner';
+    if(h < 19) return 'collation';
+    return 'diner';
+  }
+
+  function suggestMeals(remaining, excludeIds){
+    if(remaining.kcal < 100) return [];
+    var moment = currentMealMoment();
+    var remProteinDensity = remaining.kcal > 0 ? (remaining.protein*4) / remaining.kcal : 0;
+    var candidates = MENU_TEMPLATES.filter(function(t){
+      return excludeIds.indexOf(t.id) === -1 && t.kcal <= remaining.kcal + 150;
+    });
+    candidates.forEach(function(t){
+      var density = (t.protein*4) / t.kcal;
+      var densityDiff = Math.abs(density - remProteinDensity);
+      var overshoot = Math.max(0, t.kcal - remaining.kcal) / Math.max(remaining.kcal, 1);
+      var momentBonus = (t.moment === moment) ? -0.08 : 0;
+      t._score = densityDiff + overshoot*0.6 + momentBonus;
+    });
+    candidates.sort(function(a,b){ return a._score - b._score; });
+    return candidates.slice(0,3);
+  }
+
+  function renderMealSuggestions(){
+    var iso = todayISO();
+    if(suggestDate !== iso){ suggestDate = iso; suggestExclude = []; suggestShown = []; }
+    var remaining = remainingMacros(iso);
+
+    var html = '<div class="card"><div class="card-title"><h2>Suggestions</h2>' +
+      '<button class="btn-ghost btn-sm" data-action="refresh-suggestions">🔄 Autre idée</button></div>';
+    html += '<div class="eyebrow">Reste aujourd\'hui</div>';
+    html += '<div class="stat-row" style="margin-bottom:14px;">' +
+      '<div class="stat-tile"><div class="v">'+Math.max(0,Math.round(remaining.kcal))+'</div><div class="u">kcal</div></div>' +
+      '<div class="stat-tile"><div class="v">'+Math.max(0,Math.round(remaining.protein))+'g</div><div class="u">protéines</div></div>' +
+      '<div class="stat-tile"><div class="v">'+Math.max(0,Math.round(remaining.carbs))+'g</div><div class="u">glucides</div></div>' +
+      '<div class="stat-tile"><div class="v">'+Math.max(0,Math.round(remaining.fat))+'g</div><div class="u">lipides</div></div>' +
+      '</div>';
+
+    if(remaining.kcal <= 80){
+      suggestShown = [];
+      html += '<div class="empty"><span class="big">Objectif atteint 🎉</span>Tu as rempli tes calories du jour.</div>';
+    } else {
+      var list = suggestMeals(remaining, suggestExclude);
+      if(!list.length){ suggestExclude = []; list = suggestMeals(remaining, suggestExclude); }
+      suggestShown = list.map(function(t){ return t.id; });
+      if(!list.length){
+        html += '<div class="empty">Pas de suggestion pour l\'instant — ajoute un repas manuellement ou via la recherche.</div>';
+      } else {
+        html += list.map(function(t){
+          return '<div class="list-item"><div class="li-main"><div class="li-title">'+t.name+'</div>' +
+            '<div class="li-sub">'+t.desc+'</div>' +
+            '<div class="li-sub">'+Math.round(t.kcal)+' kcal · P '+Math.round(t.protein)+'g · G '+Math.round(t.carbs)+'g · L '+Math.round(t.fat)+'g</div></div>' +
+            '<button class="btn btn-sm btn-lime" data-action="add-suggestion" data-id="'+t.id+'">Ajouter</button></div>';
+        }).join('');
+      }
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function addSuggestionToLog(id){
+    var t = MENU_TEMPLATES.find(function(x){ return x.id === id; });
+    if(!t) return;
+    state.logs.meals.push({ id: uid(), date: todayISO(), name: t.name, kcal:t.kcal, protein:t.protein, carbs:t.carbs, fat:t.fat });
+    if(suggestExclude.indexOf(id) === -1) suggestExclude.push(id);
+    persist();
+    renderNutrition();
+    toast(t.name + ' ajouté');
+  }
+
   function renderNutrition(){
     var iso = todayISO();
     var meals = mealsForDate(iso);
@@ -950,6 +1056,8 @@
       '<div class="stat-tile"><div class="v">'+Math.round(totals.carbs)+'g</div><div class="u">glucides</div></div>' +
       '<div class="stat-tile"><div class="v">'+Math.round(totals.fat)+'g</div><div class="u">lipides</div></div>' +
       '</div></div>';
+
+    html += renderMealSuggestions();
 
     html += '<div class="card"><div class="card-title"><h2>Ajouter</h2></div>';
     html += '<div class="tag-row">' + state.foodLibrary.map(function(f){
@@ -1383,6 +1491,8 @@
     else if(action === 'save-workout'){ saveWorkout(); }
     else if(action === 'go-add-meal'){ activeTab='nutrition'; location.hash='#nutrition'; renderShell(); renderActiveTab(); }
     else if(action === 'add-food'){ addFoodToLog(btn.dataset.id); }
+    else if(action === 'refresh-suggestions'){ suggestExclude = suggestExclude.concat(suggestShown); renderNutrition(); }
+    else if(action === 'add-suggestion'){ addSuggestionToLog(btn.dataset.id); }
     else if(action === 'show-food-search'){ foodSearch.show = true; renderNutrition(); var q=document.getElementById('fs-query'); if(q) q.focus(); }
     else if(action === 'run-food-search'){ runFoodSearch(); }
     else if(action === 'scan-barcode'){ openScanner(); }
